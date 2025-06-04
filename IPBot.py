@@ -29,15 +29,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 ################################################################################
 
 # Токен телеграм-бота
-TELEGRAM_BOT_TOKEN = "..."
+TELEGRAM_BOT_TOKEN = "8036049088:AAHgc5KlBAyXM1QWb-zFB3Y524R61E0QjXA"
 
 # Настройки YandexGPT
 # ссылка, куда отправляются запросы для анализа текста
 YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
 # OAuth-токен и FolderID YandexGPT
-YANDEX_OAUTH_TOKEN = "..."
-YANDEX_FOLDER_ID = "..."
+YANDEX_OAUTH_TOKEN = "y0__xDpwcjBBxjB3RMgj5P1shOES2V_R0BTgrA5HXhYpTo7ZsSL9w"
+YANDEX_FOLDER_ID = "b1g0iom1okbabchscjdh"
 
 
 def get_iam_token():
@@ -140,6 +140,40 @@ def request_yandex_gpt(user_text: str) -> dict:
     except requests.RequestException as e:
         print(f"[ERROR] request_yandex_gpt: {e}")
         return {}
+
+def analyze_all_ideas_with_yandex_gpt() -> dict:
+    session = SessionLocal()
+    ideas = session.query(Ideas).all()
+    session.close()
+
+    if not ideas:
+        return {"error": "Нет инициатив для анализа."}
+
+    idea_payload = [
+        {"text": idea.text_idea, "chat_id": int(idea.chat_id)}
+        for idea in ideas
+    ]
+
+    prompt = (
+        "Ты получаешь список инициатив от сотрудников компании в формате JSON. "
+        "Каждая инициатива содержит текст предложения и chat_id отправителя. Твоя задача:\n\n"
+        "1. Проанализируй все инициативы.\n"
+        "2. Объедини похожие по смыслу инициативы в группы (кластеры).\n"
+        "3. Для каждой группы:\n"
+        "◦ Сформулируй объединённую идею, которая обобщает все инициативы внутри группы.\n"
+        "◦ Сохрани список всех chat_id, отправивших инициативы, попавшие в эту группу.\n"
+        "4. Верни результат в виде массива объектов JSON следующей структуры:\n\n"
+        "[\n"
+        "  {\n"
+        "    \"group_idea\": \"Краткое описание объединённой идеи\",\n"
+        "    \"chat_ids\": [12345678, 23456789, 34567890]\n"
+        "  },\n"
+        "  ...\n"
+        "]\n\n"
+        f"А вот данные: ```{idea_payload}```"
+    )
+
+    return request_yandex_gpt(prompt)
 
 
 ################################################################################
@@ -568,14 +602,34 @@ async def moderation_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def analytics_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Просмотр количества идей
-    """
+    await update.message.reply_text("Пожалуйста, подождите, анализ идей выполняется...")
+
+    result = analyze_all_ideas_with_yandex_gpt()
+
+    if "error" in result:
+        await update.message.reply_text(result["error"])
+        return MODERATION_PANEL
+
+    try:
+        text = result["result"]["alternatives"][0]["message"]["text"]
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка разбора ответа от YandexGPT: {e}")
+        return MODERATION_PANEL
+
     session = SessionLocal()
-    total_ideas = session.query(Ideas).count()
-    await update.message.reply_text(f"Всего идей: {total_ideas}")
+    log = AnalysisLog(analysis_result=text)
+    session.add(log)
+    session.commit()
     session.close()
+
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i + 4000])
+    else:
+        await update.message.reply_text(text)
+
     return MODERATION_PANEL
+
 
 
 # ################################################################################
