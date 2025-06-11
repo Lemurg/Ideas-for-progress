@@ -29,15 +29,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 ################################################################################
 
 # Токен телеграм-бота
-TELEGRAM_BOT_TOKEN = "8036049088:AAHgc5KlBAyXM1QWb-zFB3Y524R61E0QjXA"
+TELEGRAM_BOT_TOKEN = "..."
 
 # Настройки YandexGPT
 # ссылка, куда отправляются запросы для анализа текста
 YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
 # OAuth-токен и FolderID YandexGPT
-YANDEX_OAUTH_TOKEN = "y0__xDpwcjBBxjB3RMgj5P1shOES2V_R0BTgrA5HXhYpTo7ZsSL9w"
-YANDEX_FOLDER_ID = "b1g0iom1okbabchscjdh"
+YANDEX_OAUTH_TOKEN = "..."
+YANDEX_FOLDER_ID = "..."
 
 
 def get_iam_token():
