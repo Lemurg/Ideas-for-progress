@@ -12,84 +12,30 @@ from telegram.ext import (
     filters
 )
 
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    ForeignKey,
-    DateTime,
-    Text
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    YANDEX_GPT_API_ENDPOINT,
+    YANDEX_FOLDER_ID,
+    get_iam_token,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-from dotenv import load_dotenv
-import os
+from database.models import Ideas, AdminUser, AnalysisLog
+from database.db import SessionLocal
 
-
-################################################################################
-# 1. НАСТРОЙКИ
-################################################################################
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") # Токен бота Telegram
-
-YANDEX_OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN") # Токен OAuth для Yandex
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID") # ID папки YandexGPT
-YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion" # URL API YandexGPT
-
-
-def get_iam_token():
-    response = requests.post(
-        'https://iam.api.cloud.yandex.net/iam/v1/tokens',
-        json={'yandexPassportOauthToken': YANDEX_OAUTH_TOKEN}
-    )
-    response.raise_for_status()
-    return response.json()['iamToken']
-
-
-# Путь к базе данных SQLite
-DB_PATH = "sqlite:///my_survey_bot.db"
-
-
-################################################################################
-# 2. МОДЕЛИ БАЗЫ ДАННЫХ (SQLALCHEMY)
-################################################################################
-
-Base = declarative_base()
-
-
-class Ideas(Base):
-    __tablename__ = "ideas"
-
-    id = Column(Integer, primary_key=True)
-    text_idea = Column(String, nullable=True)
-    chat_id = Column(String, nullable=True)
-    user_name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    status = Column(String, default='На модерации')
-    moderator_comment = Column(Text, nullable=True)
-
-
-class AnalysisLog(Base):
-    __tablename__ = "analysis_logs"
-
-    id = Column(Integer, primary_key=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    # место хранения JSON ответа от YandexGPT
-    analysis_result = Column(Text, nullable=True)
-
-
-class AdminUser(Base):
-    __tablename__ = "admin_user"
-
-    id = Column(Integer, primary_key=True)
-    user_name = Column(String, nullable=True)
-    user_chat_id = Column(Integer, nullable=True)
-
-
-engine = create_engine(DB_PATH, echo=False)
-Base.metadata.create_all(engine)
-SessionLocal = sessionmaker(bind=engine)
+from bot.states import (
+    MAIN_MENU,
+    SUBMIT_IDEA_TEXT,
+    SUBMIT_IDEA_CONFIRMATION,
+    MY_IDEAS_LIST,
+    IDEA_DETAILS,
+    IDEA_DETAILS_SELECT,
+    MODERATION_PANEL,
+    ADD_AN_MODERATION,
+    MODERATION_LIST,
+    MODERATION_DECISION,
+    MODERATION_COMMENT,
+    ANALYTICS_VIEW
+)
 
 
 ################################################################################
@@ -138,27 +84,6 @@ def request_yandex_gpt(user_text: str) -> dict:
     except requests.RequestException as e:
         print(f"[ERROR] request_yandex_gpt: {e}")
         return {}
-
-
-################################################################################
-# 4. СОСТОЯНИЯ ДЛЯ CONVERSATIONHANDLER
-################################################################################
-(
-    MAIN_MENU,                  # Главное меню: "Предложить идею"/"Мои идеи"
-    SUBMIT_IDEA_TEXT,           # Ввод текста идеи
-    SUBMIT_IDEA_CONFIRMATION,   # Подтверждение перед отправкой
-    MY_IDEAS_LIST,              # Просмотр своих идей
-    IDEA_DETAILS,               # Детали конкретной идей (статус, комментарии)
-    IDEA_DETAILS_SELECT,        # Выбор идеи
-    MODERATION_PANEL,           # Панель админа, для управления идеями
-    # Добавить администраторов (для догступа к admin-панели)
-    ADD_AN_MODERATION,
-    MODERATION_LIST,            # Список идей админу
-    MODERATION_DECISION,        # Одобрить / отклонить / запросить доработку
-    MODERATION_COMMENT,         # Комментарий модератора (если требуется)
-    ANALYTICS_VIEW,             # Просмотр аналитики (графики, статистика)
-) = range(12)
-
 
 ################################################################################
 # 5. ХЕНДЛЕРЫ
