@@ -23,21 +23,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
+from dotenv import load_dotenv
+import os
+
 
 ################################################################################
 # 1. НАСТРОЙКИ
 ################################################################################
 
-# Токен телеграм-бота
-TELEGRAM_BOT_TOKEN = "..."
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") # Токен бота Telegram
 
-# Настройки YandexGPT
-# ссылка, куда отправляются запросы для анализа текста
-YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
-
-# OAuth-токен и FolderID YandexGPT
-YANDEX_OAUTH_TOKEN = "..."
-YANDEX_FOLDER_ID = "..."
+YANDEX_OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN") # Токен OAuth для Yandex
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID") # ID папки YandexGPT
+YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion" # URL API YandexGPT
 
 
 def get_iam_token():
