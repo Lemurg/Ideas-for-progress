@@ -1,168 +1,20 @@
-import requests
-import datetime
+from db.database import SessionLocal
+from db.model import Ideas, AdminUser, AnalysisLog
 
+from gpt_service import analyze_all_ideas_with_yandex_gpt
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ConversationHandler,
-    PicklePersistence,
-    ContextTypes,
-    filters
-)
-
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    ForeignKey,
-    DateTime,
-    Text
-)
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-
-from dotenv import load_dotenv
-import os
-
-
-################################################################################
-# 1. НАСТРОЙКИ
-################################################################################
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") # Токен бота Telegram
-
-YANDEX_OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN") # Токен OAuth для Yandex
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID") # ID папки YandexGPT
-YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion" # URL API YandexGPT
-
-
-def get_iam_token():
-    response = requests.post(
-        'https://iam.api.cloud.yandex.net/iam/v1/tokens',
-        json={'yandexPassportOauthToken': YANDEX_OAUTH_TOKEN}
-    )
-    response.raise_for_status()
-    return response.json()['iamToken']
-
-
-# Путь к базе данных SQLite
-DB_PATH = "sqlite:///my_survey_bot.db"
-
-
-################################################################################
-# 2. МОДЕЛИ БАЗЫ ДАННЫХ (SQLALCHEMY)
-################################################################################
-
-Base = declarative_base()
-
-
-class Ideas(Base):
-    __tablename__ = "ideas"
-
-    id = Column(Integer, primary_key=True)
-    text_idea = Column(String, nullable=True)
-    chat_id = Column(String, nullable=True)
-    user_name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    status = Column(String, default='На модерации')
-    moderator_comment = Column(Text, nullable=True)
-
-
-class AnalysisLog(Base):
-    __tablename__ = "analysis_logs"
-
-    id = Column(Integer, primary_key=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    # место хранения JSON ответа от YandexGPT
-    analysis_result = Column(Text, nullable=True)
-
-
-class AdminUser(Base):
-    __tablename__ = "admin_user"
-
-    id = Column(Integer, primary_key=True)
-    user_name = Column(String, nullable=True)
-    user_chat_id = Column(Integer, nullable=True)
-
-
-engine = create_engine(DB_PATH, echo=False)
-Base.metadata.create_all(engine)
-SessionLocal = sessionmaker(bind=engine)
-
-
-################################################################################
-# 3. ФУНКЦИИ ДЛЯ РАБОТЫ С ДАННЫМИ
-################################################################################
-
-def request_yandex_gpt(user_text: str) -> dict:
-    # Получение iamToken
-    iam_token = get_iam_token()
-
-    headers = {
-        "Authorization": f"Bearer {iam_token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt",
-        "completionOptions": {
-            "temperature": 0.8,
-            "maxTokens": 1000
-        },
-        "messages": [
-            {
-                "role": "system",
-                "text": "Ты помощник, который анализирует отзывы сотрудников."
-            },
-            {
-                "role": "user",
-                "text": user_text
-            }
-        ]
-    }
-
-    try:
-        response = requests.post(
-            YANDEX_GPT_API_ENDPOINT,
-            headers=headers,
-            json=data
-        )
-        response.raise_for_status()
-        result = response.json()
-        # Текст ответа ищем в result["result"]["alternatives"][0]["message"]["text"]
-        # или возвращаем весь словарь
-        return result
-    except requests.RequestException as e:
-        print(f"[ERROR] request_yandex_gpt: {e}")
-        return {}
-
-
-################################################################################
-# 4. СОСТОЯНИЯ ДЛЯ CONVERSATIONHANDLER
-################################################################################
-(
-    MAIN_MENU,                  # Главное меню: "Предложить идею"/"Мои идеи"
-    SUBMIT_IDEA_TEXT,           # Ввод текста идеи
-    SUBMIT_IDEA_CONFIRMATION,   # Подтверждение перед отправкой
-    MY_IDEAS_LIST,              # Просмотр своих идей
-    IDEA_DETAILS,               # Детали конкретной идей (статус, комментарии)
-    IDEA_DETAILS_SELECT,        # Выбор идеи
-    MODERATION_PANEL,           # Панель админа, для управления идеями
-    # Добавить администраторов (для догступа к admin-панели)
+from telegram.ext import ContextTypes
+from states import(
+    MAIN_MENU,
+    SUBMIT_IDEA_TEXT,
+    SUBMIT_IDEA_CONFIRMATION,
+    IDEA_DETAILS_SELECT,
+    MODERATION_PANEL,
     ADD_AN_MODERATION,
-    MODERATION_LIST,            # Список идей админу
-    MODERATION_DECISION,        # Одобрить / отклонить / запросить доработку
-    MODERATION_COMMENT,         # Комментарий модератора (если требуется)
-    ANALYTICS_VIEW,             # Просмотр аналитики (графики, статистика)
-) = range(12)
+    MODERATION_DECISION,
+    MODERATION_COMMENT,
+)
 
-
-################################################################################
-# 5. ХЕНДЛЕРЫ
-################################################################################
 
 
 def main_menu_markup(chat_id) -> ReplyKeyboardMarkup:
@@ -569,96 +421,30 @@ async def analytics_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Просмотр количества идей
     """
+    await update.message.reply_text("Пожалуйста, подождите, анализ идей выполняется...")
+
+    result = analyze_all_ideas_with_yandex_gpt()
+
+    if "error" in result:
+        await update.message.reply_text(result["error"])
+        return MODERATION_PANEL
+
+    try:
+        text = result["result"]["alternatives"][0]["message"]["text"]
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка разбора ответа от YandexGPT: {e}")
+        return MODERATION_PANEL
+
     session = SessionLocal()
-    total_ideas = session.query(Ideas).count()
-    await update.message.reply_text(f"Всего идей: {total_ideas}")
+    log = AnalysisLog(analysis_result=text)
+    session.add(log)
+    session.commit()
     session.close()
+
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i + 4000])
+    else:
+        await update.message.reply_text(text)
+
     return MODERATION_PANEL
-
-
-# ################################################################################
-# # 6. СБОРКА И ЗАПУСК (APPLICATION)
-# ################################################################################
-
-def main():
-    persistence = PicklePersistence(filepath="bot_data.pkl")
-    application = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .persistence(persistence)
-        .build()
-    )
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start_command)],
-        states={
-            MAIN_MENU: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               handle_role_choice)
-            ],
-
-            # 6.1: "Идеи"
-            SUBMIT_IDEA_TEXT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               receive_new_ideas),
-            ],
-
-            SUBMIT_IDEA_CONFIRMATION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               confirm_idea_submission)
-            ],
-
-            # 6.2: "Список идей"
-
-            MY_IDEAS_LIST: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               list_of_my_ideas),
-            ],
-            IDEA_DETAILS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, idea_details),
-            ],
-            IDEA_DETAILS_SELECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, idea_details)
-            ],
-
-            # 6.3: "Admin"
-
-            MODERATION_PANEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               moderation_panel),
-            ],
-            ADD_AN_MODERATION: [
-                # здесь проверяем код доступа
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               add_moderation),
-            ],
-            MODERATION_LIST: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               moderation_list),
-            ],
-            MODERATION_DECISION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               moderation_decision),
-            ],
-            MODERATION_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               moderation_comment),
-            ],
-            ANALYTICS_VIEW: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND,
-                               analytics_view),
-            ],
-        },
-
-        fallbacks=[CommandHandler("start", start_command)],
-        allow_reentry=True,
-    )
-
-    application.add_handler(conv_handler)
-
-    # Запуск бота
-    application.run_polling()
-
-
-if __name__ == "__main__":
-    main()
