@@ -1,5 +1,6 @@
 import requests
 import datetime
+import os
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -17,7 +18,6 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
-    ForeignKey,
     DateTime,
     Text
 )
@@ -29,15 +29,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 ################################################################################
 
 # Токен телеграм-бота
-TELEGRAM_BOT_TOKEN = "..."
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Настройки YandexGPT
 # ссылка, куда отправляются запросы для анализа текста
 YANDEX_GPT_API_ENDPOINT = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
 
 # OAuth-токен и FolderID YandexGPT
-YANDEX_OAUTH_TOKEN = "..."
-YANDEX_FOLDER_ID = "..."
+YANDEX_OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 
 
 def get_iam_token():
@@ -141,6 +141,35 @@ def request_yandex_gpt(user_text: str) -> dict:
         print(f"[ERROR] request_yandex_gpt: {e}")
         return {}
 
+def analyze_all_ideas_with_yandex_gpt() -> dict:
+    session = SessionLocal()
+    ideas = session.query(Ideas).all()
+    session.close()
+
+    if not ideas:
+        return {"error": "Нет инициатив для анализа."}
+
+    idea_payload = [
+        {"text": idea.text_idea, "chat_id": int(idea.chat_id)}
+        for idea in ideas
+    ]
+
+    prompt = (
+        "Ты получаешь список инициатив от сотрудников компании"
+        "Каждая инициатива содержит текст предложения и chat_id отправителя. Твоя задача:\n\n"
+        "1. Проанализируй все инициативы.\n"
+        "2. Объедини похожие по смыслу инициативы в группы (кластеры).\n"
+        "3. Для каждой группы:\n"
+        "◦ Сформулируй объединённую идею, которая обобщает все инициативы внутри группы.\n"
+        "◦ Примерная структура:\n"
+        " идея 1: ...\n"
+        " идея 2: ...\n"
+        "и т.д."
+        f"А вот данные: ```{idea_payload}```"
+    )
+
+    return request_yandex_gpt(prompt)
+
 
 ################################################################################
 # 4. СОСТОЯНИЯ ДЛЯ CONVERSATIONHANDLER
@@ -191,7 +220,6 @@ def admin_menu_markup() -> ReplyKeyboardMarkup:
     keyboard = [
         ["Анализ"],
         ["Список идей"],
-        ["Просмотр количества идей"],
         ["Главное меню"],
         ["Добавить admin"]
     ]
@@ -442,9 +470,6 @@ async def moderation_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "Оставить комментарий":
         return await moderation_comment(update, context)
 
-    elif text == "Просмотр количества идей":
-        return await analytics_view(update, context)
-
     else:
         await update.message.reply_text("Неизвестная команда. Пожалуйста, выберите действие снова.", reply_markup=main_menu_markup(update.message.chat.id))
         return MAIN_MENU
@@ -568,14 +593,34 @@ async def moderation_comment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def analytics_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Просмотр количества идей
-    """
+    await update.message.reply_text("Пожалуйста, подождите, анализ идей выполняется...")
+
+    result = analyze_all_ideas_with_yandex_gpt()
+
+    if "error" in result:
+        await update.message.reply_text(result["error"])
+        return MODERATION_PANEL
+
+    try:
+        text = result["result"]["alternatives"][0]["message"]["text"]
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка разбора ответа от YandexGPT: {e}")
+        return MODERATION_PANEL
+
     session = SessionLocal()
-    total_ideas = session.query(Ideas).count()
-    await update.message.reply_text(f"Всего идей: {total_ideas}")
+    log = AnalysisLog(analysis_result=text)
+    session.add(log)
+    session.commit()
     session.close()
+
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i + 4000])
+    else:
+        await update.message.reply_text(text)
+
     return MODERATION_PANEL
+
 
 
 # ################################################################################
